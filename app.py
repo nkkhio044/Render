@@ -3,68 +3,64 @@ import requests
 import gradio as gr
 from fastapi import FastAPI, Request
 import uvicorn
-from transformers import pipeline
 
-# ----------------- SECRETS -----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Telegram bot token
-HF_API_KEY = os.getenv("HF_API_KEY")  # Hugging Face API key
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+HF_API_KEY = os.getenv("HF_API_KEY")
+
+HF_MODEL = "HuggingFaceH4/zephyr-7b-beta"
+HF_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+HF_HEADERS = {"Authorization": f"Bearer {HF_API_KEY}"}
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN missing")
-if not HF_API_KEY:
-    print("HF_API_KEY missing, fallback to echo bot")
 
-# ----------------- LLM FUNCTION -----------------
-# Using HF text-generation model
 def llm_reply(text):
     if not HF_API_KEY:
-        # fallback: echo bot
         return f"You said: {text}"
 
-    # Initialize generator (small model recommended for free tier)
-    generator = pipeline(
-        "text-generation",
-        model="TheBloke/vicuna-7B-1.1-HF",  # Free Hugging Face model
-        use_auth_token=HF_API_KEY
+    r = requests.post(
+        HF_URL,
+        headers=HF_HEADERS,
+        json={"inputs": text},
+        timeout=30
     )
-    output = generator(text, max_new_tokens=100)
-    return output[0]['generated_text']
 
-# ----------------- FASTAPI APP -----------------
+    if r.status_code != 200:
+        return "⚠️ Model busy, try again"
+
+    return r.json()[0]["generated_text"]
+
+# -------- FASTAPI --------
 app_fastapi = FastAPI()
 
 @app_fastapi.post("/webhook")
-async def telegram_webhook(req: Request):
+async def webhook(req: Request):
     data = await req.json()
+
     if "message" not in data:
         return {"ok": True}
 
     chat_id = data["message"]["chat"]["id"]
     text = data["message"].get("text", "")
 
-    reply_text = llm_reply(text)
+    reply = llm_reply(text)
 
     requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        json={"chat_id": chat_id, "text": reply_text}
+        json={"chat_id": chat_id, "text": reply}
     )
     return {"ok": True}
 
-# ----------------- GRADIO INTERFACE -----------------
-def gradio_fn(text):
-    return llm_reply(text)
-
+# -------- GRADIO --------
 demo = gr.Interface(
-    fn=gradio_fn,
-    inputs=gr.Textbox(label="Type your message"),
-    outputs=gr.Textbox(label="Reply"),
-    title="Telegram + HuggingFace Bot"
+    fn=llm_reply,
+    inputs=gr.Textbox(),
+    outputs=gr.Textbox(),
+    title="Telegram + HF Free Bot"
 )
 
-# Mount Gradio to FastAPI
 app = gr.mount_gradio_app(app_fastapi, demo, path="/")
 
-# ----------------- RUN SERVER -----------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
+    port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
