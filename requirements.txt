@@ -2,3 +2,5 @@ gradio
 fastapi
 uvicorn
 requests
+transformers
+torch
